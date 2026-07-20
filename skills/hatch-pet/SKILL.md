@@ -61,10 +61,10 @@ A pet is a directory containing exactly two files, compatible with the Codex pet
 6. Install and activate:
 
    ```bash
-   PETCTL="${KIMI_CODE_HOME:-$HOME/.kimi-code}/plugins/managed/kimi-pet/bin/petctl"
-   bash "$PETCTL" install /path/to/<pet-id>   # copies into ~/.kimi-code/pets/
-   bash "$PETCTL" use <pet-id>
-   bash "$PETCTL" summon
+   PETCTL="${KIMI_CODE_HOME:-$HOME/.kimi-code}/plugins/managed/kimi-pet/bin/petctl.mjs"
+   node "$PETCTL" install /path/to/<pet-id>   # copies into ~/.kimi-code/pets/
+   node "$PETCTL" use <pet-id>
+   node "$PETCTL" summon
    ```
 
 7. Show the user the result (the pet greets with its waving row) and ask if any state needs tuning.

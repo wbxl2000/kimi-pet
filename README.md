@@ -15,7 +15,7 @@ An always-on-top pixel pet floats on your desktop and mirrors what Kimi Code is 
 
 Multiple concurrent Kimi Code sessions are aggregated by priority: `waiting > failed > running > review > idle`.
 
-A click-through speech bubble floats above the pet showing the live summary: active session count (`2 个会话`), the project name, and what the top session is doing — the current prompt while running, the tool awaiting permission, or the finished task. Permission requests and `Notification` events also fire native (macOS) notifications via the menu-bar tray icon, which doubles as a quit menu.
+A speech bubble floats above the pet showing the live summary: active session count (`2 个会话`), the project name, and what the top session is doing — the current prompt while running, the tool awaiting permission, or the finished task. Click the bubble to dismiss it until the next state change. Permission requests and `Notification` events also fire native notifications via the menu-bar tray icon, which doubles as a quit menu and shows an update notice when a new release is out. The pet remembers the spot you dragged it to (`run/position.json`).
 
 ## How it works
 
@@ -47,18 +47,20 @@ Inside Kimi Code:
 
 Inside Kimi Code, just ask: `/pet` (plugin command `kimi-pet:pet`), or tell the agent to summon/dismiss the pet.
 
-From a shell (petctl is also on the plugin dir after install):
+From a shell — `petctl` is a zero-dependency node script (node is guaranteed wherever Kimi Code runs), so the same command works on macOS, Linux, and Windows:
 
 ```bash
-bin/petctl gallery                 # browse the community gallery
-bin/petctl install doro--lingxiaotian
-bin/petctl summon                  # first run creates a venv + installs PySide6 (~100MB)
-bin/petctl use <pet-id>            # switch pet
-bin/petctl status
-bin/petctl dismiss
+node bin/petctl.mjs gallery                 # browse the community gallery
+node bin/petctl.mjs install doro--lingxiaotian
+node bin/petctl.mjs summon                  # first run creates a venv + installs PySide6 (~100MB)
+node bin/petctl.mjs use <pet-id>            # switch pet
+node bin/petctl.mjs status
+node bin/petctl.mjs dismiss
 ```
 
-Requirements: `python3` on PATH (the daemon creates its own venv at `~/.kimi-code/pets/venv`). Platforms: macOS and Linux (X11) tested paths; `petctl` is bash — on Windows run it from Git Bash (the daemon itself is cross-platform Python/Qt).
+(`bin/petctl` remains as a bash wrapper for muscle memory; on Windows call `node bin\petctl.mjs` directly.)
+
+Requirements: `node` and `python3` on PATH (the daemon creates its own venv at `~/.kimi-code/pets/venv`). The daemon itself is cross-platform Python/Qt — macOS and Linux (X11) are the tested paths; on Windows the pet window works but is less battle-tested.
 
 ## Creating your own pet
 
@@ -69,7 +71,8 @@ Ask the agent to "hatch a pet" — the bundled `hatch-pet` skill walks through b
 ```
 kimi.plugin.json          # manifest: hooks + commands + skills
 hooks/pet-hook.mjs        # session event -> state file (node, zero-dep)
-bin/petctl                # daemon control + pet installer (bash)
+bin/petctl.mjs            # daemon control + pet installer (node, zero-dep, cross-platform)
+bin/petctl                # bash wrapper around petctl.mjs
 daemon/pet_daemon.py      # the floating window (PySide6)
 daemon/requirements.txt
 commands/pet.md           # /pet slash command

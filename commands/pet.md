@@ -4,21 +4,21 @@ description: Summon, dismiss, or manage the kimi-pet desktop pet (codex-compatib
 
 Manage the kimi-pet desktop pet by running its `petctl` helper with the Bash tool. Interpret the user's intent from: $ARGUMENTS
 
-The helper lives at (use this exact path; quote it):
+The helper lives at (use this exact path; quote it). It's a node script — node is guaranteed wherever Kimi Code runs, on any platform:
 
 ```bash
-PETCTL="${KIMI_CODE_HOME:-$HOME/.kimi-code}/plugins/managed/kimi-pet/bin/petctl"
+PETCTL="${KIMI_CODE_HOME:-$HOME/.kimi-code}/plugins/managed/kimi-pet/bin/petctl.mjs"
 ```
 
-Subcommands:
+Subcommands (run as `node "$PETCTL" <subcommand>`):
 
-- `bash "$PETCTL" summon [pet-id]` — start the desktop pet. This is the default when no arguments are given. The first summon creates a Python venv under `~/.kimi-code/pets/venv` and installs PySide6 (one-time, ~100MB download) — tell the user before running it.
-- `bash "$PETCTL" dismiss` — stop the pet.
-- `bash "$PETCTL" status` — show daemon state, active pet, and live session states.
-- `bash "$PETCTL" list` — list installed pets (kimi home plus `~/.codex/pets` fallback).
-- `bash "$PETCTL" gallery` — list pets in the awesome-codex-pet community gallery.
-- `bash "$PETCTL" install <pet-slug--author-slug | local-dir>` — install a pet from the gallery or copy a local pet directory.
-- `bash "$PETCTL" use <pet-id>` — switch the active pet.
+- `node "$PETCTL" summon [pet-id]` — start the desktop pet. This is the default when no arguments are given. The first summon creates a Python venv under `~/.kimi-code/pets/venv` and installs PySide6 (one-time, ~100MB download) — tell the user before running it.
+- `node "$PETCTL" dismiss` — stop the pet.
+- `node "$PETCTL" status` — show daemon state, active pet, and live session states.
+- `node "$PETCTL" list` — list installed pets (kimi home plus `~/.codex/pets` fallback).
+- `node "$PETCTL" gallery` — list pets in the awesome-codex-pet community gallery.
+- `node "$PETCTL" install <pet-slug--author-slug | local-dir>` — install a pet from the gallery or copy a local pet directory.
+- `node "$PETCTL" use <pet-id>` — switch the active pet.
 
 Behavior rules:
 

@@ -21,11 +21,13 @@ import json
 import os
 import signal
 import sys
+import threading
 import time
+import urllib.request
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QIcon, QImage, QPainter, QPixmap
+from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices, QIcon, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QLabel, QMenu, QSystemTrayIcon, QWidget
 
 CELL_W, CELL_H = 192, 208
@@ -64,6 +66,9 @@ STATE_TTL_S = {"failed": 8.0, "review": 60.0, "running": 10 * 60.0}
 SESSION_STALE_S = 15 * 60  # reap sessions whose CLI died without SessionEnd
 POLL_INTERVAL_MS = 250
 
+GITHUB_REPO = "wbxl2000/kimi-pet"
+UPDATE_CHECK_INTERVAL_S = 6 * 3600
+
 
 def kimi_home() -> Path:
     return Path(os.environ.get("KIMI_CODE_HOME") or Path.home() / ".kimi-code")
@@ -73,6 +78,10 @@ def run_dir() -> Path:
     return kimi_home() / "pets" / "run"
 
 
+def position_file() -> Path:
+    return run_dir() / "position.json"
+
+
 def read_json(path: Path) -> dict | None:
     try:
         with path.open("r", encoding="utf-8") as fh:
@@ -80,6 +89,35 @@ def read_json(path: Path) -> dict | None:
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
+
+
+def write_json(path: Path, data: dict) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(f"{json.dumps(data)}\n", encoding="utf-8")
+        tmp.replace(path)
+    except OSError:
+        pass
+
+
+def plugin_version() -> str:
+    """Version of the installed plugin this daemon ships with."""
+    try:
+        meta = json.loads(
+            (Path(__file__).resolve().parents[1] / "kimi.plugin.json").read_text("utf-8")
+        )
+        return str(meta.get("version", "0.0.0"))
+    except (OSError, ValueError, IndexError):
+        return "0.0.0"
+
+
+def parse_version(version: str) -> tuple[int, ...]:
+    nums = []
+    for part in version.lstrip("vV").split("."):
+        digits = "".join(ch for ch in part if ch.isdigit())
+        nums.append(int(digits) if digits else 0)
+    return tuple(nums)
 
 
 def cell_fully_transparent(cell: QImage) -> bool:
@@ -127,9 +165,10 @@ class BubbleWindow(QWidget):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         if hasattr(Qt.WidgetAttribute, "WA_MacAlwaysShowToolWindow"):
             self.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.on_dismiss = None  # callable, set by PetWindow
         self.label = QLabel(self)
         self.label.setWordWrap(True)
         self.label.setMaximumWidth(self.MAX_WIDTH)
@@ -137,6 +176,11 @@ class BubbleWindow(QWidget):
             "QLabel { background: rgba(255, 255, 255, 235); color: #222;"
             " border-radius: 10px; padding: 6px 10px; font-size: 12px; }"
         )
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        # Click the bubble to dismiss it until the next state/message change.
+        if event.button() == Qt.MouseButton.LeftButton and self.on_dismiss is not None:
+            self.on_dismiss()
 
     def set_text(self, text: str) -> None:
         if not text:
@@ -182,15 +226,22 @@ class PetWindow(QWidget):
         self._last_drag_x = 0
         self._hold_left = 1  # remaining hold ticks for the current quiet frame
         self._notified_key: tuple | None = None  # last (state, ts) we notified for
+        self._bubble_dismissed_key: tuple | None = None  # bubble content the user closed
+        self._update_available: str | None = None  # latest release tag, if newer
+        self._update_menu_action = None
+        self._last_update_check = 0.0
 
         self.bubble = BubbleWindow()
+        self.bubble.on_dismiss = self._dismiss_bubble
         self.tray = QSystemTrayIcon(self)
         self.tray.setToolTip("kimi-pet")
         tray_menu = QMenu()
         tray_quit = tray_menu.addAction("Quit kimi-pet")
         tray_quit.triggered.connect(QApplication.quit)
         self.tray.setContextMenu(tray_menu)
-        self.tray.show()
+        # tray.show() happens in reload_pet once an icon exists (avoids the
+        # "setVisible: No Icon set" warning).
+        self._check_update_async()
 
         self.anim_timer = QTimer(self, timeout=self._advance_frame)
         self.poll_timer = QTimer(self, timeout=self._poll, interval=POLL_INTERVAL_MS)
@@ -221,6 +272,7 @@ class PetWindow(QWidget):
         self.setFixedSize(round(CELL_W * SCALE), round(CELL_H * SCALE))  # 115x125 points
         self.tray.setIcon(QIcon(self.frames["idle"][0]))
         self.tray.setToolTip(f"kimi-pet — {self.pet_name}")
+        self.tray.show()
         self._play_oneshot("waving")
         self._place_initial()
         self.show()
@@ -230,6 +282,13 @@ class PetWindow(QWidget):
         if screen is None or not self.frames:
             return
         area = screen.availableGeometry()
+        saved = read_json(position_file())
+        if saved is not None:
+            # Restore the dragged-to spot, clamped in case screens changed.
+            x = max(area.left(), min(int(saved.get("x", 0)), area.right() - self.width()))
+            y = max(area.top(), min(int(saved.get("y", 0)), area.bottom() - self.height()))
+            self.move(x, y)
+            return
         self.move(area.right() - self.width() - 48, area.bottom() - self.height() - 24)
 
     # -- animation -----------------------------------------------------
@@ -290,6 +349,9 @@ class PetWindow(QWidget):
         self._apply_state(state)
         self._notify(state, top)
         self._update_bubble(state, top, count)
+        if time.time() - self._last_update_check > UPDATE_CHECK_INTERVAL_S:
+            self._check_update_async()
+        self._apply_update_notice()
 
     def _consume_control(self) -> None:
         control = run_dir() / "control.json"
@@ -375,12 +437,65 @@ class PetWindow(QWidget):
 
     def _update_bubble(self, state: str, top: dict | None, count: int) -> None:
         text = self._bubble_text(state, top, count)
-        self.bubble.set_text(text)
-        if text:
-            screen = QApplication.screenAt(self.geometry().center())
-            screen = screen or QApplication.primaryScreen()
-            if screen is not None:
-                self.bubble.place_near(self.geometry(), screen.availableGeometry())
+        key = (state, float(top.get("ts", 0)) if top else 0.0, text)
+        if key != self._bubble_dismissed_key:
+            self._bubble_dismissed_key = None  # new content — show again
+        show = bool(text) and self._bubble_dismissed_key is None
+        self.bubble.set_text(text if show else "")
+        if show:
+            self._place_bubble()
+
+    def _dismiss_bubble(self) -> None:
+        state, top, count = self._aggregate()
+        self._bubble_dismissed_key = (
+            state,
+            float(top.get("ts", 0)) if top else 0.0,
+            self._bubble_text(state, top, count),
+        )
+        self.bubble.hide()
+
+    def _place_bubble(self) -> None:
+        screen = QApplication.screenAt(self.geometry().center())
+        screen = screen or QApplication.primaryScreen()
+        if screen is not None:
+            self.bubble.place_near(self.geometry(), screen.availableGeometry())
+
+    # -- update check ------------------------------------------------------
+
+    def _check_update_async(self) -> None:
+        self._last_update_check = time.time()
+
+        def worker() -> None:
+            try:
+                req = urllib.request.Request(
+                    f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
+                    headers={
+                        "User-Agent": "kimi-pet-daemon",
+                        "Accept": "application/vnd.github+json",
+                    },
+                )
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                latest = str(data.get("tag_name", ""))
+                if latest and parse_version(latest) > parse_version(plugin_version()):
+                    self._update_available = latest
+            except Exception:
+                pass  # offline / rate-limited — stay quiet
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_update_notice(self) -> None:
+        latest = self._update_available
+        if not latest or self._update_menu_action is not None:
+            return
+        action = self.tray.contextMenu().addAction(f"Update available: {latest}")
+        action.triggered.connect(
+            lambda: QDesktopServices.openUrl(
+                QUrl(f"https://github.com/{GITHUB_REPO}/releases/latest")
+            )
+        )
+        self._update_menu_action = action
+        print(f"kimi-pet: update available: {latest}", flush=True)
 
     def _notify(self, state: str, top: dict | None) -> None:
         """Native notification + beep for things that need the user's attention."""
@@ -432,15 +547,13 @@ class PetWindow(QWidget):
                 self._set_animation(drag_state)
         self.move(point - self.drag_offset)
         if self.bubble.isVisible():
-            screen = QApplication.screenAt(self.geometry().center())
-            screen = screen or QApplication.primaryScreen()
-            if screen is not None:
-                self.bubble.place_near(self.geometry(), screen.availableGeometry())
+            self._place_bubble()
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802 (Qt override)
         if self.drag_offset is not None:
             self.drag_offset = None
             self._set_animation(self._active_animation())
+            write_json(position_file(), {"x": self.x(), "y": self.y()})
 
     def enterEvent(self, event) -> None:  # noqa: N802 (Qt override)
         if self.state == "idle" and self.oneshot is None:
