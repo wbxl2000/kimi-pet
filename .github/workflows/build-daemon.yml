@@ -30,11 +30,23 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install UPX (macOS)
+        if: runner.os == 'macOS'
+        run: brew install upx
+
+      - name: Install UPX (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y -qq upx-ucl || sudo apt-get install -y -qq upx
+
+      - name: Install UPX (Windows)
+        if: runner.os == 'Windows'
+        run: choco install upx -y --no-progress
+
       - name: Install build deps
         run: python -m pip install --upgrade pip pyinstaller -r daemon/requirements.txt
 
       - name: Build onefile daemon
-        run: pyinstaller --onefile --name kimi-pet-daemon --noconfirm daemon/pet_daemon.py
+        run: pyinstaller daemon/kimi-pet-daemon.spec --noconfirm
 
       - name: Install Qt runtime deps (Linux)
         if: runner.os == 'Linux'
