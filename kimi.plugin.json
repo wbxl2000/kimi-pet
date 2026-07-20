@@ -1,0 +1,33 @@
+{
+  "name": "kimi-pet",
+  "version": "0.1.0",
+  "description": "Desktop pet companion for Kimi Code, compatible with the Codex pet ecosystem (pet.json + spritesheet.webp).",
+  "keywords": ["pet", "desktop", "companion", "codex-pet"],
+  "homepage": "https://github.com/wbxl2000/kimi-pet",
+  "license": "MIT",
+  "hooks": [
+    { "event": "SessionStart", "command": "node hooks/pet-hook.mjs", "timeout": 10 },
+    { "event": "UserPromptSubmit", "command": "node hooks/pet-hook.mjs", "timeout": 10 },
+    { "event": "PostToolUse", "command": "node hooks/pet-hook.mjs", "timeout": 10 },
+    { "event": "PostToolUseFailure", "command": "node hooks/pet-hook.mjs", "timeout": 10 },
+    { "event": "PermissionRequest", "command": "node hooks/pet-hook.mjs", "timeout": 10 },
+    { "event": "PermissionResult", "command": "node hooks/pet-hook.mjs", "timeout": 10 },
+    { "event": "Stop", "command": "node hooks/pet-hook.mjs", "timeout": 10 },
+    { "event": "StopFailure", "command": "node hooks/pet-hook.mjs", "timeout": 10 },
+    { "event": "Interrupt", "command": "node hooks/pet-hook.mjs", "timeout": 10 },
+    { "event": "SessionEnd", "command": "node hooks/pet-hook.mjs", "timeout": 10 },
+    { "event": "SubagentStart", "command": "node hooks/pet-hook.mjs", "timeout": 10 },
+    { "event": "SubagentStop", "command": "node hooks/pet-hook.mjs", "timeout": 10 },
+    { "event": "Notification", "command": "node hooks/pet-hook.mjs", "timeout": 10 },
+    { "event": "PreCompact", "command": "node hooks/pet-hook.mjs", "timeout": 10 },
+    { "event": "PostCompact", "command": "node hooks/pet-hook.mjs", "timeout": 10 }
+  ],
+  "commands": ["./commands"],
+  "skills": ["./skills/hatch-pet"],
+  "interface": {
+    "displayName": "Kimi Pet",
+    "shortDescription": "Desktop pet companion that mirrors Kimi Code's live state, compatible with Codex pets.",
+    "longDescription": "Summons an always-on-top desktop pet that reacts to Kimi Code session events (running, waiting for permission, review, failure). Pet assets follow the Codex pet format (pet.json + spritesheet.webp), so pets from the community gallery (awesome-codex-pet) or a local ~/.codex/pets directory work out of the box.",
+    "developerName": "Moonshot AI"
+  }
+}
