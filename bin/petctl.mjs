@@ -48,8 +48,10 @@ const CODEX_PETS = process.env.CODEX_HOME
 const GALLERY_RAW =
   process.env.KIMI_PET_GALLERY_RAW ??
   'https://raw.githubusercontent.com/legeling/awesome-codex-pet/main';
+const GITHUB_REPO = 'wbxl2000/kimi-pet';
 const WIN = process.platform === 'win32';
 const VENV_PYTHON = path.join(VENV_DIR, WIN ? 'Scripts' : 'bin', WIN ? 'python.exe' : 'python');
+const DAEMON_BIN_DIR = path.join(PET_HOME, 'bin');
 const SLUG_RE = /^[a-z0-9]+(-[a-z0-9]+)*--[a-z0-9]+(-[a-z0-9]+)*$/;
 
 const log = (msg) => console.log(`petctl: ${msg}`);
@@ -62,9 +64,12 @@ const USAGE = `Usage: petctl <command> [args]
 
 Daemon:
   summon [pet-id]     Start the desktop pet (optionally switching to pet-id first).
-                      The first summon creates a Python venv and installs PySide6.
+                      Uses the plugin venv if present, otherwise downloads the
+                      prebuilt daemon binary (python3 not needed), with the
+                      venv as fallback.
   dismiss             Stop the desktop pet daemon.
   status              Show daemon state, active pet, and live session states.
+  update-daemon       Re-download the prebuilt daemon binary (when using it).
 
 Pets (codex-compatible: pet.json + spritesheet.webp):
   list                List installed pets (kimi home + ~/.codex/pets fallback).
@@ -138,6 +143,65 @@ function run(cmd, args, opts = {}) {
   if (result.status !== 0) die(`${cmd} ${args.join(' ')} exited with ${result.status}`);
 }
 
+// -- prebuilt daemon binary -----------------------------------------------
+
+function daemonAssetName() {
+  const names = {
+    'darwin arm64': 'kimi-pet-daemon-macos-arm64',
+    'darwin x64': 'kimi-pet-daemon-macos-x64',
+    'linux x64': 'kimi-pet-daemon-linux-x64',
+    'win32 x64': 'kimi-pet-daemon-windows-x64.exe',
+  };
+  return names[`${process.platform} ${process.arch}`];
+}
+
+function daemonBinaryPath() {
+  const asset = daemonAssetName();
+  return asset === undefined ? undefined : path.join(DAEMON_BIN_DIR, asset);
+}
+
+async function downloadDaemonBinary() {
+  const asset = daemonAssetName();
+  const bin = daemonBinaryPath();
+  if (asset === undefined || bin === undefined) return undefined;
+  const url = `https://github.com/${GITHUB_REPO}/releases/latest/download/${asset}`;
+  log(`downloading prebuilt daemon (${asset}) ...`);
+  let resp;
+  try {
+    resp = await fetch(url, { redirect: 'follow' });
+  } catch {
+    resp = undefined;
+  }
+  if (resp === undefined || !resp.ok) {
+    log(`download failed (HTTP ${resp?.status ?? 'network error'}); falling back to python venv`);
+    return undefined;
+  }
+  mkdirSync(DAEMON_BIN_DIR, { recursive: true });
+  writeFileSync(bin, Buffer.from(await resp.arrayBuffer()));
+  spawnSync('chmod', ['+x', bin]);
+  if (process.platform === 'darwin') {
+    // curl-downloaded binaries are quarantined by Gatekeeper; un-quarantine.
+    spawnSync('xattr', ['-d', 'com.apple.quarantine', bin]);
+  }
+  return bin;
+}
+
+/**
+ * How to launch the daemon, in preference order:
+ * 1. the plugin's own daemon .py via the venv (always the freshest code —
+ *    the plugin dir is replaced on every plugin update);
+ * 2. an already-downloaded prebuilt binary;
+ * 3. undefined → caller should download or create the venv.
+ */
+function daemonCommand() {
+  if (existsSync(VENV_PYTHON) && existsSync(DAEMON_PY)) {
+    return { cmd: VENV_PYTHON, args: [DAEMON_PY] };
+  }
+  const bin = daemonBinaryPath();
+  if (bin !== undefined && existsSync(bin)) return { cmd: bin, args: [] };
+  return undefined;
+}
+
 function ensureDaemonEnv() {
   if (existsSync(VENV_PYTHON)) return;
   const python = WIN ? 'python' : 'python3';
@@ -166,13 +230,20 @@ async function cmdSummon(petId) {
     log(`daemon already running (pid ${daemonPid()}).`);
     return;
   }
-  ensureDaemonEnv();
   ensureRunDir();
-  if (!existsSync(DAEMON_PY)) die(`daemon script missing: ${DAEMON_PY}`);
+  let command = daemonCommand();
+  if (command === undefined) {
+    const bin = await downloadDaemonBinary();
+    if (bin !== undefined) command = { cmd: bin, args: [] };
+  }
+  if (command === undefined) {
+    ensureDaemonEnv();
+    command = { cmd: VENV_PYTHON, args: [DAEMON_PY] };
+  }
   // Plain fd (not fs.WriteStream): a stream would keep petctl's event loop
   // alive and the process would never exit after spawning the daemon.
   const logFd = openSync(LOG_FILE, 'a');
-  const child = spawn(VENV_PYTHON, [DAEMON_PY], {
+  const child = spawn(command.cmd, command.args, {
     detached: true,
     stdio: ['ignore', logFd, logFd],
     windowsHide: true,
@@ -180,7 +251,17 @@ async function cmdSummon(petId) {
   child.unref();
   closeSync(logFd);
   writeFileSync(PID_FILE, String(child.pid));
-  log(`pet summoned (pid ${child.pid}). Logs: ${LOG_FILE}`);
+  log(`pet summoned (pid ${child.pid}, ${path.basename(command.cmd)}). Logs: ${LOG_FILE}`);
+}
+
+async function cmdUpdateDaemon() {
+  const bin = daemonBinaryPath();
+  if (bin === undefined) die(`no prebuilt daemon for ${process.platform}/${process.arch}.`);
+  rmSync(bin, { force: true });
+  const downloaded = await downloadDaemonBinary();
+  if (downloaded === undefined) die('download failed; binary left removed (venv still works).');
+  log(`daemon binary updated: ${downloaded}`);
+  if (daemonAlive()) log('restart the pet to use it: petctl dismiss && petctl summon');
 }
 
 async function cmdDismiss() {
@@ -289,6 +370,8 @@ async function main() {
       return cmdSummon(args[0]);
     case 'dismiss':
       return cmdDismiss();
+    case 'update-daemon':
+      return cmdUpdateDaemon();
     case 'status':
       return cmdStatus();
     case 'list':

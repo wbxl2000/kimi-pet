@@ -1,0 +1,63 @@
+name: build-daemon
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            asset: kimi-pet-daemon-macos-arm64
+          - os: macos-13
+            asset: kimi-pet-daemon-macos-x64
+          - os: ubuntu-latest
+            asset: kimi-pet-daemon-linux-x64
+          - os: windows-latest
+            asset: kimi-pet-daemon-windows-x64.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build deps
+        run: python -m pip install --upgrade pip pyinstaller -r daemon/requirements.txt
+
+      - name: Build onefile daemon
+        run: pyinstaller --onefile --name kimi-pet-daemon --noconfirm daemon/pet_daemon.py
+
+      - name: Smoke test (non-Windows)
+        if: runner.os != 'Windows'
+        run: |
+          set -e
+          QT_QPA_PLATFORM=offscreen ./dist/kimi-pet-daemon &
+          PID=$!
+          sleep 8
+          # alive and well if we can still signal it; a frozen-binary startup
+          # crash would have exited long ago and fail this step
+          kill -0 $PID
+          kill $PID
+          wait $PID || true
+
+      - name: Upload release asset
+        if: github.event_name == 'release'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+          ASSET: ${{ matrix.asset }}
+        run: |
+          set -euo pipefail
+          BIN=dist/kimi-pet-daemon
+          [ -f "$BIN" ] || BIN=dist/kimi-pet-daemon.exe
+          gh release upload "$TAG" "$BIN#$ASSET" --clobber

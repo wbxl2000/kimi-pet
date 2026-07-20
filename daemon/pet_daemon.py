@@ -26,7 +26,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtCore import QFileSystemWatcher, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QIcon, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QLabel, QMenu, QSystemTrayIcon, QWidget
 
@@ -64,7 +64,10 @@ FRAME_HOLDS = {
 # request must stay visible.
 STATE_TTL_S = {"failed": 8.0, "review": 60.0, "running": 10 * 60.0}
 SESSION_STALE_S = 15 * 60  # reap sessions whose CLI died without SessionEnd
-POLL_INTERVAL_MS = 250
+# The poll timer is only a fallback — state/control/pet changes arrive
+# instantly via QFileSystemWatcher (hook writes are tmp+rename, which the
+# directory watch sees). The timer still drives TTL decay and update checks.
+POLL_INTERVAL_MS = 4000
 
 GITHUB_REPO = "wbxl2000/kimi-pet"
 UPDATE_CHECK_INTERVAL_S = 6 * 3600
@@ -102,14 +105,23 @@ def write_json(path: Path, data: dict) -> None:
 
 
 def plugin_version() -> str:
-    """Version of the installed plugin this daemon ships with."""
-    try:
-        meta = json.loads(
-            (Path(__file__).resolve().parents[1] / "kimi.plugin.json").read_text("utf-8")
-        )
-        return str(meta.get("version", "0.0.0"))
-    except (OSError, ValueError, IndexError):
-        return "0.0.0"
+    """Version of the installed plugin this daemon ships with.
+
+    Two layouts: the venv runs daemon/*.py inside the plugin dir; a frozen
+    PyInstaller binary lives in the pet home, so fall back to the managed
+    plugin install under the kimi home.
+    """
+    candidates = [
+        Path(__file__).resolve().parents[1] / "kimi.plugin.json",
+        kimi_home() / "plugins" / "managed" / "kimi-pet" / "kimi.plugin.json",
+    ]
+    for candidate in candidates:
+        try:
+            meta = json.loads(candidate.read_text("utf-8"))
+            return str(meta.get("version", "0.0.0"))
+        except (OSError, ValueError):
+            continue
+    return "0.0.0"
 
 
 def parse_version(version: str) -> tuple[int, ...]:
@@ -118,6 +130,19 @@ def parse_version(version: str) -> tuple[int, ...]:
         digits = "".join(ch for ch in part if ch.isdigit())
         nums.append(int(digits) if digits else 0)
     return tuple(nums)
+
+
+def system_dark_mode() -> bool:
+    hints = QApplication.styleHints()
+    color_scheme = getattr(hints, "colorScheme", None)
+    if callable(color_scheme):
+        scheme = color_scheme()
+        if scheme == Qt.ColorScheme.Dark:
+            return True
+        if scheme == Qt.ColorScheme.Light:
+            return False
+    # Fallback for older Qt: judge by the window palette luminance.
+    return QApplication.palette().window().color().lightness() < 128
 
 
 def cell_fully_transparent(cell: QImage) -> bool:
@@ -172,9 +197,15 @@ class BubbleWindow(QWidget):
         self.label = QLabel(self)
         self.label.setWordWrap(True)
         self.label.setMaximumWidth(self.MAX_WIDTH)
+        self.apply_scheme(system_dark_mode())
+
+    def apply_scheme(self, dark: bool) -> None:
+        if dark:
+            style = "background: rgba(32, 32, 34, 235); color: #eee;"
+        else:
+            style = "background: rgba(255, 255, 255, 235); color: #222;"
         self.label.setStyleSheet(
-            "QLabel { background: rgba(255, 255, 255, 235); color: #222;"
-            " border-radius: 10px; padding: 6px 10px; font-size: 12px; }"
+            f"QLabel {{ {style} border-radius: 10px; padding: 6px 10px; font-size: 12px; }}"
         )
 
     def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt override)
@@ -233,6 +264,11 @@ class PetWindow(QWidget):
 
         self.bubble = BubbleWindow()
         self.bubble.on_dismiss = self._dismiss_bubble
+        hints = QApplication.styleHints()
+        if hasattr(hints, "colorSchemeChanged"):
+            hints.colorSchemeChanged.connect(
+                lambda *_: self.bubble.apply_scheme(system_dark_mode())
+            )
         self.tray = QSystemTrayIcon(self)
         self.tray.setToolTip("kimi-pet")
         tray_menu = QMenu()
@@ -249,6 +285,12 @@ class PetWindow(QWidget):
         self.reload_pet()
         self._set_animation("idle")
         self._place_initial()
+        # Wake instantly on hook state files (sessions dir) and control /
+        # current-pet changes (run dir); hook writes are tmp+rename, which a
+        # directory watch reports.
+        self.fs_watcher = QFileSystemWatcher(self)
+        self.fs_watcher.addPaths([str(run_dir()), str(run_dir() / "sessions")])
+        self.fs_watcher.directoryChanged.connect(lambda *_: self._poll())
         self.poll_timer.start()
         if self.frames:
             self.show()

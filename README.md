@@ -60,7 +60,7 @@ node bin/petctl.mjs dismiss
 
 (`bin/petctl` remains as a bash wrapper for muscle memory; on Windows call `node bin\petctl.mjs` directly.)
 
-Requirements: `node` and `python3` on PATH (the daemon creates its own venv at `~/.kimi-code/pets/venv`). The daemon itself is cross-platform Python/Qt — macOS and Linux (X11) are the tested paths; on Windows the pet window works but is less battle-tested.
+Requirements: `node` (guaranteed wherever Kimi Code runs). On first summon, petctl downloads a prebuilt single-file daemon binary for your platform from the release page — **no Python needed** in the common case. It falls back to creating a venv (`python3` required) when no prebuilt binary exists for your platform/arch, and prefers the venv when one already exists so plugin updates always run fresh daemon code. Refresh the binary with `node bin/petctl.mjs update-daemon`. Platforms: macOS (arm64/x64), Linux (x64), Windows (x64); the binaries are built by [CI](.github/workflows/build-daemon.yml).
 
 ## Creating your own pet
 
