@@ -15,6 +15,8 @@ An always-on-top pixel pet floats on your desktop and mirrors what Kimi Code is 
 
 Multiple concurrent Kimi Code sessions are aggregated by priority: `waiting > failed > running > review > idle`.
 
+A click-through speech bubble floats above the pet showing the live summary: active session count (`2 个会话`), the project name, and what the top session is doing — the current prompt while running, the tool awaiting permission, or the finished task. Permission requests and `Notification` events also fire native (macOS) notifications via the menu-bar tray icon, which doubles as a quit menu.
+
 ## How it works
 
 ```

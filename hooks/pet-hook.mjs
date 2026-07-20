@@ -16,6 +16,7 @@
 import {
   mkdirSync,
   readdirSync,
+  readFileSync,
   renameSync,
   rmSync,
   statSync,
@@ -108,11 +109,37 @@ function main() {
     if (state === undefined) return;
 
     mkdirSync(sessionsDir, { recursive: true });
+
+    // Text carried alongside the state for the daemon's speech bubble. New
+    // events that don't bring their own text inherit the previous one, so a
+    // turn's prompt survives into Stop/PostToolUse states.
+    let text;
+    if (typeof payload.prompt === 'string' && payload.prompt.trim().length > 0) {
+      text = payload.prompt.replace(/\s+/g, ' ').trim().slice(0, 120);
+    } else if (typeof payload.title === 'string' && payload.title.trim().length > 0) {
+      text = payload.title.replace(/\s+/g, ' ').trim().slice(0, 120);
+    }
+    let project;
+    if (typeof payload.cwd === 'string' && payload.cwd.length > 0) {
+      project = path.basename(payload.cwd);
+    }
+    if (text === undefined || project === undefined) {
+      try {
+        const prev = JSON.parse(readFileSync(sessionFile, 'utf8'));
+        text ??= typeof prev.text === 'string' ? prev.text : undefined;
+        project ??= typeof prev.project === 'string' ? prev.project : undefined;
+      } catch {
+        // no previous record — fine
+      }
+    }
+
     const record = {
       session_id: payload.session_id ?? '',
       state,
       event,
       tool_name: typeof payload.tool_name === 'string' ? payload.tool_name : undefined,
+      text,
+      project,
       ts: Date.now() / 1000,
     };
     // Write tmp + rename so the daemon never reads a half-written file.

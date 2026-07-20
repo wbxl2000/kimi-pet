@@ -25,8 +25,8 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QImage, QPainter, QPixmap
-from PySide6.QtWidgets import QApplication, QMenu, QWidget
+from PySide6.QtGui import QIcon, QImage, QPainter, QPixmap
+from PySide6.QtWidgets import QApplication, QLabel, QMenu, QSystemTrayIcon, QWidget
 
 CELL_W, CELL_H = 192, 208
 SCALE = 0.6
@@ -109,6 +109,54 @@ def load_frames(sheet_path: Path) -> dict[str, list[QPixmap]]:
     return frames
 
 
+class BubbleWindow(QWidget):
+    """Click-through speech bubble floating above the pet.
+
+    Shows the live session summary: how many sessions are active, which
+    project the top one is in, and what it is currently doing.
+    """
+
+    MAX_WIDTH = 280
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.Tool,
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        if hasattr(Qt.WidgetAttribute, "WA_MacAlwaysShowToolWindow"):
+            self.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow)
+        self.label = QLabel(self)
+        self.label.setWordWrap(True)
+        self.label.setMaximumWidth(self.MAX_WIDTH)
+        self.label.setStyleSheet(
+            "QLabel { background: rgba(255, 255, 255, 235); color: #222;"
+            " border-radius: 10px; padding: 6px 10px; font-size: 12px; }"
+        )
+
+    def set_text(self, text: str) -> None:
+        if not text:
+            self.hide()
+            return
+        self.label.setText(text)
+        self.label.adjustSize()
+        self.resize(self.label.sizeHint())
+        self.show()
+
+    def place_near(self, pet_geom, screen_area) -> None:
+        """Float above the pet (right-aligned); flip below when off-screen."""
+        x = pet_geom.right() - self.width()
+        x = max(screen_area.left() + 8, min(x, screen_area.right() - self.width() - 8))
+        y = pet_geom.top() - self.height() - 8
+        if y < screen_area.top() + 8:
+            y = pet_geom.bottom() + 8
+        self.move(x, y)
+
+
 class PetWindow(QWidget):
     def __init__(self) -> None:
         super().__init__()
@@ -133,6 +181,16 @@ class PetWindow(QWidget):
         self.drag_offset = None
         self._last_drag_x = 0
         self._hold_left = 1  # remaining hold ticks for the current quiet frame
+        self._notified_key: tuple | None = None  # last (state, ts) we notified for
+
+        self.bubble = BubbleWindow()
+        self.tray = QSystemTrayIcon(self)
+        self.tray.setToolTip("kimi-pet")
+        tray_menu = QMenu()
+        tray_quit = tray_menu.addAction("Quit kimi-pet")
+        tray_quit.triggered.connect(QApplication.quit)
+        self.tray.setContextMenu(tray_menu)
+        self.tray.show()
 
         self.anim_timer = QTimer(self, timeout=self._advance_frame)
         self.poll_timer = QTimer(self, timeout=self._poll, interval=POLL_INTERVAL_MS)
@@ -161,6 +219,8 @@ class PetWindow(QWidget):
         self.pet_dir = pet_dir
         self.pet_name = str(meta.get("displayName") or pet_dir.name)
         self.setFixedSize(round(CELL_W * SCALE), round(CELL_H * SCALE))  # 115x125 points
+        self.tray.setIcon(QIcon(self.frames["idle"][0]))
+        self.tray.setToolTip(f"kimi-pet — {self.pet_name}")
         self._play_oneshot("waving")
         self._place_initial()
         self.show()
@@ -226,7 +286,10 @@ class PetWindow(QWidget):
     def _poll(self) -> None:
         self._consume_control()
         self.reload_pet()
-        self._apply_state(self._aggregate_state())
+        state, top, count = self._aggregate()
+        self._apply_state(state)
+        self._notify(state, top)
+        self._update_bubble(state, top, count)
 
     def _consume_control(self) -> None:
         control = run_dir() / "control.json"
@@ -244,9 +307,16 @@ class PetWindow(QWidget):
             self.pet_dir = None  # force reload_pet to re-read current.json
             self.reload_pet()
 
-    def _aggregate_state(self) -> str:
+    def _aggregate(self) -> tuple[str, dict | None, int]:
+        """Pick the live session with the highest-priority state.
+
+        Returns (state, top_session_data, live_session_count). Decayed and
+        stale sessions count for neither.
+        """
         sessions = run_dir() / "sessions"
-        best = "idle"
+        top: dict | None = None
+        top_key = (-1, 0.0)
+        count = 0
         now = time.time()
         if sessions.is_dir():
             for entry in sessions.glob("*.json"):
@@ -263,19 +333,82 @@ class PetWindow(QWidget):
                 ttl = STATE_TTL_S.get(state)
                 if ttl is not None and now - float(data.get("ts", 0)) > ttl:
                     continue
-                if STATE_PRIORITY.get(state, 0) > STATE_PRIORITY.get(best, 0):
-                    best = state
-        return best
+                count += 1
+                key = (STATE_PRIORITY.get(state, 0), float(data.get("ts", 0)))
+                if key > top_key:
+                    top_key = key
+                    top = {**data, "state": state}
+        return ((top["state"] if top is not None else "idle"), top, count)
 
     def _apply_state(self, state: str) -> None:
         if state == self.state:
             return
-        was_waiting = self.state == "waiting"
         self.state = state
-        if state == "waiting" and not was_waiting:
-            QApplication.beep()  # permission needed — nudge the user
         if self.oneshot is None:
             self._set_animation(state)
+
+    # -- bubble & notifications ------------------------------------------
+
+    def _bubble_text(self, state: str, top: dict | None, count: int) -> str:
+        if top is None or state == "idle":
+            return ""
+        text = top.get("text") if isinstance(top.get("text"), str) else None
+        tool = top.get("tool_name") if isinstance(top.get("tool_name"), str) else None
+        if state == "running":
+            body = text or "工作中…"
+        elif state == "waiting":
+            body = f"等待确认：{tool or text or '权限请求'}"
+        elif state == "failed":
+            body = f"出错了：{tool or text or '工具失败'}"
+        elif state == "review":
+            if top.get("event") == "Notification":
+                body = text or "新通知"
+            else:
+                body = f"完成：{text}" if text else "任务完成"
+        else:
+            return ""
+        prefix = f"{count} 个会话 · " if count > 1 else ""
+        project = top.get("project")
+        if isinstance(project, str) and project:
+            prefix += f"{project}｜"
+        return prefix + body
+
+    def _update_bubble(self, state: str, top: dict | None, count: int) -> None:
+        text = self._bubble_text(state, top, count)
+        self.bubble.set_text(text)
+        if text:
+            screen = QApplication.screenAt(self.geometry().center())
+            screen = screen or QApplication.primaryScreen()
+            if screen is not None:
+                self.bubble.place_near(self.geometry(), screen.availableGeometry())
+
+    def _notify(self, state: str, top: dict | None) -> None:
+        """Native notification + beep for things that need the user's attention."""
+        if top is None:
+            return
+        key = (state, float(top.get("ts", 0)))
+        if key == self._notified_key:
+            return
+        project = top.get("project") if isinstance(top.get("project"), str) else ""
+        if state == "waiting":
+            self._notified_key = key
+            QApplication.beep()  # permission needed — nudge the user
+            tool = top.get("tool_name") or "权限请求"
+            self.tray.showMessage(
+                "kimi-pet：等待确认",
+                f"{project}｜{tool}" if project else str(tool),
+                QSystemTrayIcon.MessageIcon.Information,
+                8000,
+            )
+        elif state == "review" and top.get("event") == "Notification":
+            self._notified_key = key
+            text = top.get("text") or "新通知"
+            self.tray.showMessage(
+                project or "kimi-pet",
+                str(text),
+                QSystemTrayIcon.MessageIcon.Information,
+                8000,
+            )
 
     # -- mouse interaction ----------------------------------------------
 
@@ -298,6 +431,11 @@ class PetWindow(QWidget):
                 self.oneshot = None
                 self._set_animation(drag_state)
         self.move(point - self.drag_offset)
+        if self.bubble.isVisible():
+            screen = QApplication.screenAt(self.geometry().center())
+            screen = screen or QApplication.primaryScreen()
+            if screen is not None:
+                self.bubble.place_near(self.geometry(), screen.availableGeometry())
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802 (Qt override)
         if self.drag_offset is not None:
