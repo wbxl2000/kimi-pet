@@ -1,6 +1,6 @@
 {
   "name": "kimi-pet",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Desktop pet companion for Kimi Code, compatible with the Codex pet ecosystem (pet.json + spritesheet.webp).",
   "keywords": ["pet", "desktop", "companion", "codex-pet"],
   "homepage": "https://github.com/wbxl2000/kimi-pet",

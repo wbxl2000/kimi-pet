@@ -101,14 +101,7 @@ def load_frames(sheet_path: Path) -> dict[str, list[QPixmap]]:
             cell = image.copy(col * CELL_W, row * CELL_H, CELL_W, CELL_H)
             if cell_fully_transparent(cell):
                 break
-            row_frames.append(
-                QPixmap.fromImage(cell).scaled(
-                    round(CELL_W * SCALE),
-                    round(CELL_H * SCALE),
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.FastTransformation,  # keep the pixel-art look
-                )
-            )
+            row_frames.append(QPixmap.fromImage(cell))  # native 192x208; scaled at paint time
         if row_frames:
             frames[state] = row_frames
     if "idle" not in frames:
@@ -167,7 +160,7 @@ class PetWindow(QWidget):
             return
         self.pet_dir = pet_dir
         self.pet_name = str(meta.get("displayName") or pet_dir.name)
-        self.setFixedSize(self.frames["idle"][0].size())
+        self.setFixedSize(round(CELL_W * SCALE), round(CELL_H * SCALE))  # 115x125 points
         self._play_oneshot("waving")
         self._place_initial()
         self.show()
@@ -221,7 +214,11 @@ class PetWindow(QWidget):
         if not frames:
             return
         painter = QPainter(self)
-        painter.drawPixmap(0, 0, frames[self.frame_index % len(frames)])
+        # Resample the native-resolution frame straight into the window rect.
+        # Qt maps points to the backing store's device pixels, so this stays
+        # crisp on Retina (and adapts when the window moves across screens).
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        painter.drawPixmap(self.rect(), frames[self.frame_index % len(frames)])
         painter.end()
 
     # -- state polling -------------------------------------------------
