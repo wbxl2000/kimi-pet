@@ -47,6 +47,15 @@ FPS_BY_STATE = dict(ROW_STATES)
 
 # Higher priority wins when several sessions disagree on the state.
 STATE_PRIORITY = {"waiting": 5, "failed": 4, "running": 3, "review": 2, "idle": 1}
+# Per-frame hold ticks for the calm states (1 tick = one animation timer
+# interval at the state's fps; rows shorter than the list reuse the last
+# value). Mimics the codex pet renderer: hold the quiet frames so the pet is
+# mostly still with only occasional motion instead of fidgeting at full fps.
+FRAME_HOLDS = {
+    "idle": [16, 5, 5, 5, 5, 5],
+    "review": [12, 5, 5, 5, 5, 5],
+    "waiting": [10, 5, 5, 5, 5, 5],
+}
 # Sticky states decay back to idle after this many seconds without a newer
 # event — otherwise a finished turn would celebrate (or a crashed session
 # would "work") forever. `waiting` never decays: a pending permission
@@ -130,6 +139,7 @@ class PetWindow(QWidget):
         self.frame_index = 0
         self.drag_offset = None
         self._last_drag_x = 0
+        self._hold_left = 1  # remaining hold ticks for the current quiet frame
 
         self.anim_timer = QTimer(self, timeout=self._advance_frame)
         self.poll_timer = QTimer(self, timeout=self._poll, interval=POLL_INTERVAL_MS)
@@ -173,6 +183,8 @@ class PetWindow(QWidget):
 
     def _set_animation(self, name: str) -> None:
         self.frame_index = 0
+        holds = FRAME_HOLDS.get(name)
+        self._hold_left = holds[0] if holds is not None else 1
         self.anim_timer.start(max(1, round(1000 / FPS_BY_STATE.get(name, 7))))
 
     def _play_oneshot(self, name: str) -> None:
@@ -185,8 +197,13 @@ class PetWindow(QWidget):
         return self.oneshot or self.state
 
     def _advance_frame(self) -> None:
-        frames = self.frames.get(self._active_animation()) or self.frames.get("idle") or []
+        active = self._active_animation()
+        frames = self.frames.get(active) or self.frames.get("idle") or []
         if not frames:
+            return
+        holds = FRAME_HOLDS.get(active)
+        if holds is not None and self._hold_left > 1:
+            self._hold_left -= 1  # quiet frame: stay put, skip the repaint
             return
         self.frame_index += 1
         if self.frame_index >= len(frames):
@@ -195,6 +212,8 @@ class PetWindow(QWidget):
                 self.oneshot = None
                 self._set_animation(self.state)
                 return
+        if holds is not None:
+            self._hold_left = holds[min(self.frame_index, len(holds) - 1)]
         self.update()
 
     def paintEvent(self, event) -> None:  # noqa: N802 (Qt override)
