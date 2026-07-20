@@ -51,7 +51,10 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=True,
-    upx=True,  # used when available on PATH (CI installs it); skipped otherwise
+    # UPX is intentionally off: PyInstaller disables it on non-Windows anyway
+    # ("known compatibility problems"), and the real size lever is using
+    # PySide6-Essentials + the excludes above.
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=True,
