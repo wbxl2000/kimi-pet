@@ -6,9 +6,9 @@ An always-on-top pixel pet floats on your desktop and mirrors what Kimi Code is 
 
 | Pet state | Triggered by |
 | --- | --- |
-| `running` | prompt submitted, tool calls, compaction, subagents |
-| `waiting` | a permission request needs your decision (beeps) |
-| `review` | turn finished (`Stop`) / background notification |
+| `running` | prompt submitted, tool calls, compaction, subagents (decays after 10 min without events) |
+| `waiting` | a permission request needs your decision (beeps) — never decays |
+| `review` | turn finished (`Stop`) / background notification (celebrates for ~60s, then back to idle) |
 | `failed` | tool or turn failure (decays after a few seconds) |
 | `idle` | session open but quiet |
 | `waving` / `jumping` | pet appears / mouse hover |

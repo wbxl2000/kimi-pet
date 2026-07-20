@@ -47,7 +47,11 @@ FPS_BY_STATE = dict(ROW_STATES)
 
 # Higher priority wins when several sessions disagree on the state.
 STATE_PRIORITY = {"waiting": 5, "failed": 4, "running": 3, "review": 2, "idle": 1}
-FAILED_TTL_S = 8.0  # a failure blip decays back instead of sticking forever
+# Sticky states decay back to idle after this many seconds without a newer
+# event — otherwise a finished turn would celebrate (or a crashed session
+# would "work") forever. `waiting` never decays: a pending permission
+# request must stay visible.
+STATE_TTL_S = {"failed": 8.0, "review": 60.0, "running": 10 * 60.0}
 SESSION_STALE_S = 15 * 60  # reap sessions whose CLI died without SessionEnd
 POLL_INTERVAL_MS = 250
 
@@ -240,7 +244,8 @@ class PetWindow(QWidget):
                 if not data:
                     continue
                 state = str(data.get("state", "idle"))
-                if state == "failed" and now - float(data.get("ts", 0)) > FAILED_TTL_S:
+                ttl = STATE_TTL_S.get(state)
+                if ttl is not None and now - float(data.get("ts", 0)) > ttl:
                     continue
                 if STATE_PRIORITY.get(state, 0) > STATE_PRIORITY.get(best, 0):
                     best = state
