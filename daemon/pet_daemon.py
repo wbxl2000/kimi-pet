@@ -461,7 +461,7 @@ class PetWindow(QWidget):
         if state == "running":
             body = text or "工作中…"
         elif state == "waiting":
-            body = f"等待确认：{tool or text or '权限请求'}"
+            body = f"等待确认：{text or tool or '权限请求'}"
         elif state == "failed":
             body = f"出错了：{tool or text or '工具失败'}"
         elif state == "review":
@@ -550,10 +550,10 @@ class PetWindow(QWidget):
         if state == "waiting":
             self._notified_key = key
             QApplication.beep()  # permission needed — nudge the user
-            tool = top.get("tool_name") or "权限请求"
+            detail = top.get("text") or top.get("tool_name") or "权限请求"
             self.tray.showMessage(
                 "kimi-pet：等待确认",
-                f"{project}｜{tool}" if project else str(tool),
+                f"{project}｜{detail}" if project else str(detail),
                 QSystemTrayIcon.MessageIcon.Information,
                 8000,
             )
@@ -611,11 +611,51 @@ class PetWindow(QWidget):
             QApplication.quit()
 
 
+def pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+
+        handle = ctypes.windll.kernel32.OpenProcess(0x100000, False, pid)  # SYNCHRONIZE
+        if not handle:
+            return False
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
 def main() -> int:
     run_dir().mkdir(parents=True, exist_ok=True)
     (run_dir() / "sessions").mkdir(parents=True, exist_ok=True)
     pid_file = run_dir() / "daemon.pid"
+    # Single-instance guard: petctl normally prevents duplicates, but a
+    # second daemon started by hand (or from a stale plugin path) would
+    # draw a second pet. The pid file may legitimately hold our own pid or
+    # our bootloader parent's — petctl writes it before spawning us.
+    try:
+        existing = int(pid_file.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        existing = 0
+    if existing not in (0, os.getpid(), os.getppid()) and pid_alive(existing):
+        print(
+            f"kimi-pet: another daemon is already running (pid {existing}); exiting",
+            file=sys.stderr,
+        )
+        return 1
     pid_file.write_text(str(os.getpid()), encoding="utf-8")
+    write_json(
+        run_dir() / "daemon-info.json",
+        {"pid": os.getpid(), "version": plugin_version()},
+    )
 
     app = QApplication(sys.argv)
     app.setApplicationName("kimi-pet")
@@ -630,6 +670,7 @@ def main() -> int:
         return app.exec()
     finally:
         pid_file.unlink(missing_ok=True)
+        (run_dir() / "daemon-info.json").unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

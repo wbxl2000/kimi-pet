@@ -1,0 +1,30 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Syntax check JS
+        run: |
+          node --check hooks/pet-hook.mjs
+          node --check hooks/pet-hook.test.mjs
+          node --check bin/petctl.mjs
+
+      - name: Syntax check Python
+        run: python3 -m py_compile daemon/pet_daemon.py
+
+      - name: Validate manifest
+        run: node -e "const m=JSON.parse(require('fs').readFileSync('kimi.plugin.json','utf8')); if(!m.name||!m.version) throw new Error('name/version required'); console.log('manifest ok:', m.name, m.version)"
+
+      - name: Run hook tests
+        run: node --test hooks/*.test.mjs

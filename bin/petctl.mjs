@@ -227,8 +227,17 @@ async function cmdSummon(petId) {
     log(`no pet selected; defaulting to ${first.id}`);
   }
   if (daemonAlive()) {
-    log(`daemon already running (pid ${daemonPid()}).`);
-    return;
+    // A daemon left over from before a plugin update runs stale code;
+    // restart it. Old (pre-version-file) daemons are left alone.
+    const pluginVersion = readJson(path.join(SCRIPT_DIR, '..', 'kimi.plugin.json'))?.version;
+    const info = readJson(path.join(RUN_DIR, 'daemon-info.json'));
+    if (pluginVersion && typeof info?.version === 'string' && info.version !== pluginVersion) {
+      log(`daemon v${info.version} != plugin v${pluginVersion}; restarting daemon...`);
+      await cmdDismiss();
+    } else {
+      log(`daemon already running (pid ${daemonPid()}).`);
+      return;
+    }
   }
   ensureRunDir();
   let command = daemonCommand();

@@ -114,10 +114,22 @@ function main() {
     // events that don't bring their own text inherit the previous one, so a
     // turn's prompt survives into Stop/PostToolUse states.
     let text;
-    if (typeof payload.prompt === 'string' && payload.prompt.trim().length > 0) {
+    if (event === 'PermissionRequest') {
+      // display.summary is the same one-liner the approval dialog shows
+      // (e.g. the command or file being approved); action is the fallback.
+      const summary = payload?.display?.summary;
+      if (typeof summary === 'string' && summary.trim().length > 0) {
+        text = summary.replace(/\s+/g, ' ').trim().slice(0, 120);
+      } else if (typeof payload.action === 'string' && payload.action.trim().length > 0) {
+        text = payload.action.replace(/\s+/g, ' ').trim().slice(0, 120);
+      }
+    } else if (event === 'Notification') {
+      const title = typeof payload.title === 'string' ? payload.title.trim() : '';
+      const body = typeof payload.body === 'string' ? payload.body.trim() : '';
+      const combined = [title, body].filter(Boolean).join('：');
+      if (combined.length > 0) text = combined.replace(/\s+/g, ' ').slice(0, 120);
+    } else if (typeof payload.prompt === 'string' && payload.prompt.trim().length > 0) {
       text = payload.prompt.replace(/\s+/g, ' ').trim().slice(0, 120);
-    } else if (typeof payload.title === 'string' && payload.title.trim().length > 0) {
-      text = payload.title.replace(/\s+/g, ' ').trim().slice(0, 120);
     }
     let project;
     if (typeof payload.cwd === 'string' && payload.cwd.length > 0) {
