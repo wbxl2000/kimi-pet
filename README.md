@@ -6,7 +6,7 @@ An always-on-top pixel pet floats on your desktop and mirrors what Kimi Code is 
 
 | Pet state | Triggered by |
 | --- | --- |
-| `running` | prompt submitted, tool calls, compaction, subagents (decays after 10 min without events) |
+| `running` | prompt submitted or queued, turn started, tool calls, background task started, compaction, subagents (decays after 10 min without events) |
 | `waiting` | a permission request needs your decision (beeps) — never decays |
 | `review` | turn finished (`Stop`) / background notification (celebrates for ~60s, then back to idle) |
 | `failed` | tool or turn failure (decays after a few seconds) |
@@ -14,6 +14,8 @@ An always-on-top pixel pet floats on your desktop and mirrors what Kimi Code is 
 | `waving` / `jumping` | pet appears / mouse hover |
 
 Multiple concurrent Kimi Code sessions are aggregated by priority: `waiting > failed > running > review > idle`.
+
+Liveness is driven by `SessionHeartbeat` (one event per minute per session): a heartbeating session never goes stale even when it sits in `waiting` for a long permission decision, while a crashed session stops heartbeating and is pruned after the stale window. The bubble labels each session with its `session_title` (falling back to the directory name), so several sessions in the same directory stay distinguishable.
 
 A speech bubble floats above the pet showing the live summary: active session count (`2 个会话`), the project name, and what the top session is doing — the current prompt while running, the tool awaiting permission, or the finished task. Click the bubble to dismiss it until the next state change. Permission requests and `Notification` events also fire native notifications via the menu-bar tray icon, which doubles as a quit menu and shows an update notice when a new release is out. The pet remembers the spot you dragged it to (`run/position.json`).
 

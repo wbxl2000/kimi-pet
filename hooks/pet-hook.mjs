@@ -31,6 +31,8 @@ const STALE_SESSION_MS = 30 * 60 * 1000;
 const STATE_BY_EVENT = {
   SessionStart: 'idle',
   UserPromptSubmit: 'running',
+  UserPromptQueued: 'running',
+  TurnStarted: 'running',
   PostToolUse: 'running',
   PostToolUseFailure: 'failed',
   PermissionRequest: 'waiting',
@@ -40,6 +42,7 @@ const STATE_BY_EVENT = {
   Interrupt: 'idle',
   SubagentStart: 'running',
   SubagentStop: 'running',
+  TaskStarted: 'running',
   Notification: 'review',
   PreCompact: 'running',
   PostCompact: 'running',
@@ -87,6 +90,62 @@ function pruneStaleSessions(sessionsDir) {
   }
 }
 
+function readSessionRecord(sessionFile) {
+  try {
+    return JSON.parse(readFileSync(sessionFile, 'utf8'));
+  } catch {
+    return undefined;
+  }
+}
+
+function writeSessionRecord(sessionFile, record) {
+  // Write tmp + rename so the daemon never reads a half-written file.
+  const tmpFile = `${sessionFile}.${process.pid}.tmp`;
+  writeFileSync(tmpFile, `${JSON.stringify(record)}\n`);
+  renameSync(tmpFile, sessionFile);
+}
+
+function titleOrBasename(payload) {
+  if (typeof payload?.session_title === 'string' && payload.session_title.trim().length > 0) {
+    return payload.session_title.trim();
+  }
+  if (typeof payload?.cwd === 'string' && payload.cwd.length > 0) {
+    return path.basename(payload.cwd);
+  }
+  return undefined;
+}
+
+/**
+ * Heartbeats prove the session is alive without changing what it is doing:
+ * the record's `state` and `ts` (state age, drives the daemon's decay) are
+ * preserved — only the file mtime (liveness, drives stale pruning) and
+ * `last_heartbeat` move. A heartbeat for a session we never saw before
+ * creates an idle record so the pet still shows it.
+ */
+function refreshLiveness(sessionFile, sessionsDir, payload) {
+  mkdirSync(sessionsDir, { recursive: true });
+  const prev = readSessionRecord(sessionFile);
+  const title =
+    typeof payload?.session_title === 'string' && payload.session_title.trim().length > 0
+      ? payload.session_title.trim()
+      : undefined;
+  writeSessionRecord(sessionFile, {
+    session_id: payload.session_id ?? '',
+    state: typeof prev?.state === 'string' ? prev.state : 'idle',
+    event: typeof prev?.event === 'string' ? prev.event : 'SessionHeartbeat',
+    tool_name: prev?.tool_name,
+    text: prev?.text,
+    // A fresh title wins, then the label we already had, then the dirname.
+    project: title ?? prev?.project ?? titleOrBasename(payload),
+    client_type: payload.client_type ?? prev?.client_type,
+    model: prev?.model,
+    profile: prev?.profile,
+    ts: typeof prev?.ts === 'number' ? prev.ts : Date.now() / 1000,
+    last_heartbeat: Date.now() / 1000,
+  });
+  pruneStaleSessions(sessionsDir);
+}
+
 function main() {
   return readStdin().then((raw) => {
     let payload;
@@ -102,6 +161,11 @@ function main() {
 
     if (event === 'SessionEnd') {
       rmSync(sessionFile, { force: true });
+      return;
+    }
+
+    if (event === 'SessionHeartbeat') {
+      refreshLiveness(sessionFile, sessionsDir, payload);
       return;
     }
 
@@ -131,19 +195,12 @@ function main() {
     } else if (typeof payload.prompt === 'string' && payload.prompt.trim().length > 0) {
       text = payload.prompt.replace(/\s+/g, ' ').trim().slice(0, 120);
     }
-    let project;
-    if (typeof payload.cwd === 'string' && payload.cwd.length > 0) {
-      project = path.basename(payload.cwd);
-    }
-    if (text === undefined || project === undefined) {
-      try {
-        const prev = JSON.parse(readFileSync(sessionFile, 'utf8'));
-        text ??= typeof prev.text === 'string' ? prev.text : undefined;
-        project ??= typeof prev.project === 'string' ? prev.project : undefined;
-      } catch {
-        // no previous record — fine
-      }
-    }
+    // The session title beats the directory name: it is the only label that
+    // tells same-directory sessions apart.
+    const project = titleOrBasename(payload);
+    const prev = readSessionRecord(sessionFile);
+    text ??= typeof prev?.text === 'string' ? prev.text : undefined;
+    const finalProject = project ?? (typeof prev?.project === 'string' ? prev.project : undefined);
 
     const record = {
       session_id: payload.session_id ?? '',
@@ -151,13 +208,13 @@ function main() {
       event,
       tool_name: typeof payload.tool_name === 'string' ? payload.tool_name : undefined,
       text,
-      project,
+      project: finalProject,
+      client_type: payload.client_type ?? prev?.client_type,
+      model: payload.model ?? prev?.model,
+      profile: payload.profile ?? prev?.profile,
       ts: Date.now() / 1000,
     };
-    // Write tmp + rename so the daemon never reads a half-written file.
-    const tmpFile = `${sessionFile}.${process.pid}.tmp`;
-    writeFileSync(tmpFile, `${JSON.stringify(record)}\n`);
-    renameSync(tmpFile, sessionFile);
+    writeSessionRecord(sessionFile, record);
     pruneStaleSessions(sessionsDir);
   });
 }
